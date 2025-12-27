@@ -9,6 +9,12 @@ import {FullMath} from "./libraries/FullMath.sol";
 import {Path} from "./libraries/Path.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/**
+ * @title ETFQuoter
+ * @author
+ * @notice 提供ETF的兑换价格计算功能，用于计算兑换所需的token数量和路径
+ * 和uniswapV3Quoter配合使用，计算兑换所需的token数量和路径
+ */
 contract ETFQuoter is IETFQuoter {
     using FullMath for uint256;
     using Path for bytes;
@@ -26,9 +32,19 @@ contract ETFQuoter is IETFQuoter {
         swapQuoter = ISwapQuoter(swapQuoter_);
         swapFactory = ISwapFactory(swapFactory_);
         bridgeTokens = bridgeTokens_;
-        fees = [100, 500, 2500];
+        fees = [100, 500, 2500]; //需支持多种手续费
     }
 
+    /**
+     * 通过mintAmount数量的token，计算兑换为ETF所需的token数量和路径
+     * 步骤:
+     * 1. 计算需要的每个token的数量
+     * 2. 循环每个token，计算兑换所需的token数量和路径
+     * 3. 返回需要的token数量和路径
+     * 4. 注意：mintAmount需要包含滑点保护
+     * 5. 注意：如果token是srcToken，则直接返回token数量和路径
+     * 6. 注意：如果token不是srcToken，则调用quoteExactOut计算兑换所需的token数量和路径
+     */
     function quoteInvestWithToken(
         address etf,
         address srcToken,
@@ -95,6 +111,14 @@ contract ETFQuoter is IETFQuoter {
         dstAmount = totalDstAmount;
     }
 
+    /**
+     * 通过amountOut数量的token，计算兑换为tokenIn所需的token数量和路径
+     * 过程:
+     * 1. 计算所有可能的路径
+     * 2. 循环每个路径，staticcall调用uniswapV3Quoter.quoteExactOutput计算兑换所需的token数量
+     * 3. 返回最小的token数量和路径
+     * 4. 注意：amountOut需要包含滑点保护
+     */
     function quoteExactOut(
         address tokenIn,
         address tokenOut,
@@ -130,6 +154,14 @@ contract ETFQuoter is IETFQuoter {
         amountIn = minAmountIn == type(uint256).max ? 0 : minAmountIn;
     }
 
+    /**
+     * 通过amountIn数量的token，计算兑换为tokenOut所需的token数量和路径
+     * 过程:
+     * 1. 计算所有可能的路径
+     * 2. 循环每个路径，调用uniswapV3Quoter.quoteExactInput计算兑换所需的token数量
+     * 3. 返回最大的token数量和路径
+     * 4. 注意：amountIn需要包含滑点保护
+     */
     function quoteExactIn(
         address tokenIn,
         address tokenOut,
@@ -209,7 +241,7 @@ contract ETFQuoter is IETFQuoter {
         bytes[] memory tempPaths = new bytes[](maxPaths);
         uint256 index = 0;
 
-        // 1. Generate direct path：tokenA -> fee -> tokenB
+        // 1. 生成直接路径：tokenA -> fee -> tokenB
         for (uint256 i = 0; i < fees.length; i++) {
             if (swapFactory.getPool(tokenA, tokenB, fees[i]) != address(0)) {
                 tempPaths[index] = bytes.concat(
@@ -221,7 +253,7 @@ contract ETFQuoter is IETFQuoter {
             }
         }
 
-        // 2. Generate intermediate token paths：tokenA -> fee1 -> intermediary -> fee2 -> tokenB
+        // 2. 生成中间代币路径：tokenA -> fee1 -> intermediary -> fee2 -> tokenB
         for (uint256 i = 0; i < bridgeTokens.length; i++) {
             address bridge = bridgeTokens[i];
             for (uint256 j = 0; j < fees.length; j++) {

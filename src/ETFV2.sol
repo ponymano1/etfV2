@@ -164,9 +164,17 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
         IERC20(miningToken).safeTransfer(to, amount);
     }
 
-    // invest with all tokens, msg.sender need have approved all tokens to this contract
+    /**
+     * 计算需要的每个token的数量，可以由资深用户调用，需要用户准备好所有token
+     * 铸造份额给用户
+     * 转移token到合约
+     * 注意：invest with all tokens, msg.sender need have approved all tokens to this contract
+     */
     function invest(address to, uint256 mintAmount) public {
+        //根据mintAmount计算需要的每个token的数量，铸造用户份额，计算并收取手续费
         uint256[] memory tokenAmounts = _invest(to, mintAmount);
+
+        //转移token到合约
         for (uint256 i = 0; i < _tokens.length; i++) {
             if (tokenAmounts[i] > 0) {
                 IERC20(_tokens[i]).safeTransferFrom(
@@ -179,9 +187,12 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
     }
 
     function redeem(address to, uint256 burnAmount) public {
+        //计算核心等式 tokenAmount / tokenReserve = burnAmount / totalSupply
+        // 结果向下取整，避免出现0。如果不向下取整，用户可以销毁很少的份额，导致需要的token数量为0
         _redeem(to, burnAmount);
     }
 
+    //普通用户的投资方式，需要用户准备好ETH，合约会自动将ETH兑换为token
     function investWithETH(
         address to,
         uint256 mintAmount,
@@ -227,6 +238,15 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
         emit InvestedWithETH(to, mintAmount, totalPaid);
     }
 
+    /**
+     * 通过Token兑换为底层资产，并铸造份额给用户
+     * 过程:
+     * 1. 计算需要的每个token的数量
+     * 2. 转移token到合约  注意：invest with all tokens, msg.sender need have approved all tokens to this contract
+     * 3. 循环每个token，交易出需要的token到合约
+     * 4. 计算需要返还的token数量（没有用完的token）
+     * 5. 调用_invest内部函数，铸造份额给用户，并收取手续费
+     */
     function investWithToken(
         address srcToken,
         address to,
@@ -236,8 +256,9 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
     ) external {
         address[] memory tokens = getTokens();
         if (tokens.length != swapPaths.length) revert InvalidArrayLength();
+        //根据mintAmount计算需要的每个token的数量
         uint256[] memory tokenAmounts = getInvestTokenAmounts(mintAmount);
-
+        //转移token到合约
         IERC20(srcToken).safeTransferFrom(
             msg.sender,
             address(this),
@@ -245,6 +266,7 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
         );
         _approveToSwapRouter(srcToken);
 
+        //循环每个token，交易出需要的token到合约
         uint256 totalPaid;
         for (uint256 i = 0; i < tokens.length; i++) {
             if (tokenAmounts[i] == 0) continue;
@@ -265,12 +287,12 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
                 );
             }
         }
-
+        //计算需要返还的token数量（没有用完的token）
         uint256 leftAfterPaid = maxSrcTokenAmount - totalPaid;
         if (leftAfterPaid > 0) {
             IERC20(srcToken).safeTransfer(msg.sender, leftAfterPaid);
         }
-
+        //调用_invest内部函数，铸造份额给用户，并收取手续费
         _invest(to, mintAmount);
 
         emit InvestedWithToken(srcToken, to, mintAmount, totalPaid);
@@ -316,6 +338,14 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
         emit RedeemedToETH(to, burnAmount, totalReceived);
     }
 
+    /**
+     * 通过底层资产兑换为Token，并返还给用户
+     * 过程:
+     * 1. 调用_redeem内部函数，销毁份额给用户，并收取手续费
+     * 2. 循环每个token，交易出需要的token到用户
+     * 3. 判断是否满足滑点要求
+     *
+     */
     function redeemToToken(
         address dstToken,
         address to,
@@ -350,12 +380,13 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
                 );
             }
         }
-
+        //重要：判断是否满足滑点要求，不能忘了！！！
         if (totalReceived < minDstTokenAmount) revert OverSlippage();
 
         emit RedeemedToToken(dstToken, to, burnAmount, totalReceived);
     }
 
+    // rebalance函数，外部调用，调用者记得充gas
     function rebalance() external _checkTotalWeights {
         // 当前是否到了允许rebalance的时间
         if (block.timestamp < lastRebalanceTime + rebalanceInterval) {
@@ -378,9 +409,11 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
             reservesBefore[i] = IERC20(tokens[i]).balanceOf(address(this));
 
             if (getTokenTargetWeight[tokens[i]] == 0) continue;
-
+            //计算每个代币的目标市值 总市值*目标权重
             uint256 weightedValue = (totalValues *
                 getTokenTargetWeight[tokens[i]]) / HUNDRED_PERCENT;
+
+            //计算每个代币的上下限 目标市值*（1-重平衡偏离阈值） 目标市值*（1+重平衡偏离阈值）
             uint256 lowerValue = (weightedValue *
                 (HUNDRED_PERCENT - rebalanceDeviance)) / HUNDRED_PERCENT;
             uint256 upperValue = (weightedValue *
@@ -394,6 +427,7 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
                 uint8 tokenDecimals = IERC20Metadata(tokens[i]).decimals();
 
                 if (deltaValue > 0) {
+                    //计算每个代币需要swap的数量, 数量 = 市值/价格
                     tokenSwapableAmounts[i] = int256(
                         uint256(deltaValue).mulDiv(
                             10 ** tokenDecimals,
@@ -410,7 +444,7 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
                 }
             }
         }
-
+        //进行swap操作，注意要先卖后买，避免不够买的情况
         _swapTokens(tokens, tokenSwapableAmounts);
 
         uint256[] memory reservesAfter = new uint256[](tokens.length);
@@ -445,6 +479,12 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
         return _initTokenAmountPerShares;
     }
 
+    /**
+     * 根据mintAmount计算需要的每个token的数量
+     * @param mintAmount 铸造的份额数量
+     * @notice 结果向上取整，避免出现0。如果不向上取整，用户可以铸造很少的份额，导致需要的token数量为0
+     * 计算核心等式 tokenAmount / tokenReserve = mintAmount / totalSupply
+     */
     function getInvestTokenAmounts(
         uint256 mintAmount
     ) public view returns (uint256[] memory tokenAmounts) {
@@ -486,6 +526,7 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
         }
     }
 
+    //从预言机获取每个代币的市值，通过oracle合约获取
     function getTokenMarketValues()
         public
         view
@@ -550,12 +591,24 @@ contract ETFV2 is IETF, Initializable, ERC20Upgradeable, OwnableUpgradeable {
         return claimable;
     }
 
+    /**
+     * 根据mintAmount计算需要的每个token的数量
+     * 计算手续费
+     * 铸造份额给用户，并收取手续费
+     * notice: 手续费是根据mintAmount计算的，而不是根据tokenAmounts计算的
+     *
+     */
     function _invest(
         address to,
         uint256 mintAmount
     ) internal returns (uint256[] memory tokenAmounts) {
         if (mintAmount < minMintAmount) revert LessThanMinMintAmount();
+
+        //根据mintAmount计算需要的每个token的数量
+        //计算核心等式 tokenAmount / tokenReserve = mintAmount / totalSupply
         tokenAmounts = getInvestTokenAmounts(mintAmount);
+
+        //计算手续费，并mint给feeTo和用户
         uint256 fee;
         if (investFee > 0) {
             fee = (mintAmount * investFee) / HUNDRED_PERCENT;
